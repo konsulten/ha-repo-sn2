@@ -11,6 +11,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Final
+from wsgiref.util import setup_testing_defaults
 
 import aiohttp
 import websockets
@@ -106,29 +107,6 @@ class InformationUpdate:
 
 
 @dataclass
-class SettingsUpdate:
-    """Settings update event."""
-
-    settings: Settings
-
-    def can_disable_433mhz(self) -> bool:
-        """Check if the device supports disabling 433MHz functionality."""
-        return self.settings.disable_433 is not None
-
-    def can_set_diy_mode(self) -> bool:
-        """Check if the device supports DIY mode configuration."""
-        return self.settings.diy_mode is not None
-
-    def can_disable_physical_button(self) -> bool:
-        """Check if the device supports disabling the physical button."""
-        return self.settings.disable_physical_button is not None
-
-    def can_disable_led(self) -> bool:
-        """Check if the device supports disabling the LED."""
-        return self.settings.disable_led is not None
-
-
-@dataclass
 class StateChange:
     """
     State change event.
@@ -141,6 +119,35 @@ class StateChange:
     """
 
     state: float
+
+
+class Setting:
+    name: str
+
+
+class OnOffSetting(Setting):
+    def __init__(self, name: str, param_key: str, current, on_value, off_value):
+        self.name = name
+        self._param_key = param_key
+        self._enable_value = on_value
+        self._disable_value = off_value
+        self.current_state = current
+
+    async def enable(self, device: "Device") -> None:
+        await device.update_setting({self._param_key: self._enable_value})
+
+    async def disable(self, device: "Device") -> None:
+        await device.update_setting({self._param_key: self._disable_value})
+
+    def is_enabled(self) -> bool:
+        return self.current_state == self._enable_value
+
+
+@dataclass
+class SettingsUpdate:
+    """Settings update event."""
+
+    settings: list[Setting]
 
 
 UpdateEvent = ConnectionStatus | InformationUpdate | SettingsUpdate | StateChange
@@ -237,25 +244,36 @@ class Device:
 
         """
         self.host = host
-        self.dimmable = False
+        # self.dimmable = False
         self._connected = False
         self._websocket: websockets.ClientConnection | None = None
         self._ws_task = None
         self._login_key = None
-
+        self.info_data: InformationData | None = None
         # Info
-        self.model: str | None = None
-        self.sw_version: str | None = None
-        self.hw_version: str | None = None
-        self.name: str | None = None
-        self.wifi_dbm: int | None = None
-        self.wifi_ssid: str | None = None
-        self.unique_id: str | None = None
+        # self.model: str | None = None
+        # self.sw_version: str | None = None
+        # self.hw_version: str | None = None
+        # self.name: str | None = None
+        # self.wifi_dbm: int | None = None
+        # self.wifi_ssid: str | None = None
+        # self.unique_id: str | None = None
 
         # Setttings
 
         # Callbacks
         self._on_update = on_update
+
+    async def initialize(self) -> None:
+        settings = await self.get_settings()
+        info = await self.get_info()
+        if info and settings:
+            self.settings = settings
+            self.info_data = info.information
+            self.initialized = True
+        else:
+            msg = "Failed to initialize device"
+            raise RuntimeError(msg)
 
     async def _emit(self, event: UpdateEvent) -> None:
         """Invoke unified callback if provided."""
@@ -365,7 +383,9 @@ class Device:
                 case "settings":
                     settings = data.get("value")
                     settings = Settings(**settings)
-                    await self._emit(SettingsUpdate(settings))
+                    await self._emit(
+                        SettingsUpdate(settings=await self._parse_settings(settings))
+                    )
                 case unknown:
                     _LOGGER.error("unknown data received %s", unknown)
 
@@ -392,21 +412,22 @@ class Device:
         if not 0 <= value <= 1:
             msg = f"Brightness value must be between 0 and 1, got {value}"
             raise ValueError(msg)
-        await self._send_command({"type": "state", "value": value})
+        await self.send_command({"type": "state", "value": value})
 
     async def toggle(self) -> None:
         """Toggle the device state between on and off."""
-        await self._send_command({"type": "state", "value": -1})
+        await self.send_command({"type": "state", "value": -1})
 
     async def turn_off(self) -> None:
         """Turn off the device."""
-        await self._send_command({"type": "state", "value": 0})
+        await self.send_command({"type": "state", "value": 0})
 
     async def turn_on(self) -> None:
         """Turn on the device."""
-        await self._send_command({"type": "state", "value": -1})
+        await self.send_command({"type": "state", "value": -1})
 
-    async def _send_command(self, command: dict[str, Any]) -> None:
+    async def send_command(self, command: dict[str, Any]) -> None:
+        _LOGGER.error(command)
         if self._websocket is None:
             _LOGGER.error(
                 "Cannot send command to %s - no WebSocket connection available",
@@ -441,19 +462,76 @@ class Device:
         )
         return supported
 
-    async def get_settings(self) -> SettingsUpdate | None:
+    async def _parse_settings(self, settings: Settings) -> list[Setting]:
+        settings_list = []
+        if settings.disable_433 is not None:
+            settings_list.append(
+                OnOffSetting(
+                    param_key="disable_433",
+                    name="433Mhz",
+                    off_value=1,
+                    on_value=0,
+                    current=settings.disable_433,
+                )
+            )
+        if settings.disable_physical_button is not None:
+            settings_list.append(
+                OnOffSetting(
+                    param_key="disable_physical_button",
+                    name="Physical Button",
+                    off_value=1,
+                    on_value=0,
+                    current=settings.disable_physical_button,
+                )
+            )
+        if settings.disable_led is not None:
+            settings_list.append(
+                OnOffSetting(
+                    param_key="disable_led",
+                    name="Led",
+                    off_value=1,
+                    on_value=0,
+                    current=settings.disable_led,
+                )
+            )
+        if settings.diy_mode is not None:
+            settings_list.append(
+                OnOffSetting(
+                    param_key="diy_mode",
+                    name="Cloud Access",
+                    off_value=1,
+                    on_value=0,
+                    current=settings.diy_mode,
+                )
+            )
+        return settings_list
+
+    async def update_setting(self, settings: dict[str, Any]) -> None:
+        """Update device settings via REST API."""
+        url = f"http://{self.host}:3000/settings"
+        try:
+            async with (
+                aiohttp.ClientSession() as session,
+                session.post(url, json=settings) as response,
+            ):
+                response.raise_for_status()
+
+                _LOGGER.error("Updated settings at %s with %s", url, settings)
+        except Exception:
+            _LOGGER.exception("Failed to update settings at %s", url)
+            raise
+
+    async def get_settings(self) -> list[Setting] | None:
         """Fetch device settings via REST API."""
         url = f"http://{self.host}:3000/settings"
         try:
             async with aiohttp.ClientSession() as session, session.get(url) as response:
                 response.raise_for_status()
                 json_resp = await response.json()
-                settings = Settings(**json_resp)
-                self.settings = SettingsUpdate(settings)
-                return self.settings
+                return await self._parse_settings(Settings(**json_resp))
         except Exception:
             _LOGGER.exception("Failed to fetch settings from %s", url)
-            return None
+            raise
 
     async def get_info(self) -> InformationUpdate | None:
         """Fetch device information via REST API."""
@@ -463,9 +541,10 @@ class Device:
                 response.raise_for_status()
                 json_resp = await response.json()
                 information = DeviceInformation(**json_resp)
-                return InformationUpdate(
-                    InformationData.convert_device_information_to_data(information)
+                self.info_data = InformationData.convert_device_information_to_data(
+                    information
                 )
+                return InformationUpdate(self.info_data)
         except Exception:
             _LOGGER.exception("Failed to fetch device information from %s:", url)
             return None

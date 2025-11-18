@@ -27,7 +27,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up lights based on a config entry."""
-    if not entry.runtime_data.device.dimmable:
+    if not entry.runtime_data.device.info_data.dimmable:
         return
     light = SN2Light(
         device=entry.runtime_data.device,
@@ -101,7 +101,7 @@ class SN2Light(SystemNexa2Entity, LightEntity):
             else:
                 self._attr_is_on = True
                 # Convert device brightness (0-1) to HomeAssistant brightness (0-255)
-                self._attr_brightness = min(255, max(0, round(brightness_value * 255)))
+            self._attr_brightness = min(255, max(0, round(brightness_value * 255)))
 
             self.async_write_ha_state()
 

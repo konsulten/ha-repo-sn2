@@ -1,8 +1,20 @@
+# WIP
+## TODO
+* Information data
+* Delete/unload verification
+* Tests
+* translations
+* logos
+* Move sn2 lib to separate git repo package
+* Manual add device using IP/hostname w/o discovery
+
+
+
 # System Nexa 2 HA integration
 
 Integration for [System Nexa 2](https://nexa.se/system-nexa-2) for Home Assistant, this is a repository for a custom Respository that is installed through HACS.
 
-The integration will find devices on the network and add all of them automatically. A direct connection over websocket will be made to each device, for control and state updates.
+The integration will discover devices on the network. A direct connection over websocket will be made to each device, for control and state updates.
 
 ### Models
 

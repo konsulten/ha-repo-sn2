@@ -1,5 +1,6 @@
 """Switch entity for the SystemNexa2 integration."""
 
+from collections.abc import Callable
 import logging
 from typing import Any
 
@@ -11,7 +12,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from custom_components.systemnexa2.entity import SystemNexa2Entity
 from custom_components.systemnexa2.helpers import SystemNexa2ConfigEntry
-from sn2.device import Device
+from sn2.device import Device, OnOffSetting
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -24,29 +25,21 @@ async def async_setup_entry(
     """Set up lights based on a config entry."""
     device = entry.runtime_data.device
     entities = []
-    if device.settings.can_disable_433mhz():
-        entities.append(
-            ConfigurationSwitch(
-                device=entry.runtime_data.device,
-                device_info=entry.runtime_data.device_info,
-                unique_id="enable-433",
-                name="433Mhz",
-                entry_id=entry.entry_id,
+    for setting in device.settings:
+        if isinstance(setting, OnOffSetting):
+            entities.append(
+                ConfigurationSwitch(
+                    device=entry.runtime_data.device,
+                    device_info=entry.runtime_data.device_info,
+                    unique_id=f"setting-{setting.name}",
+                    name=setting.name,
+                    entry_id=entry.entry_id,
+                    setting=setting,
+                )
             )
-        )
-    if device.settings.can_disable_led():
-        entities.append(
-            ConfigurationSwitch(
-                device=entry.runtime_data.device,
-                device_info=entry.runtime_data.device_info,
-                unique_id="Led",
-                name="led",
-                entry_id=entry.entry_id,
-            )
-        )
 
     entry.runtime_data.config_entries.extend(entities)
-    if not device.dimmable:
+    if not device.info_data.dimmable:
         entry.runtime_data.main_entry = SN2SwitchPlug(
             device=device,
             device_info=entry.runtime_data.device_info,
@@ -66,18 +59,9 @@ class ConfigurationSwitch(SystemNexa2Entity, SwitchEntity):
         name: str,
         entry_id: str,
         unique_id: str,
+        setting: OnOffSetting,
     ) -> None:
-        """
-        Initialize the configuration switch.
-
-        Args:
-            device: The SystemNexa2 device instance.
-            device_info: Device registry information.
-            name: The name of the switch.
-            entry_id: The config entry ID.
-            unique_id: The unique identifier for this entity.
-
-        """
+        """Initialize the configuration switch."""
         super().__init__(
             device,
             entry_id=entry_id,
@@ -88,14 +72,18 @@ class ConfigurationSwitch(SystemNexa2Entity, SwitchEntity):
         self.entity_description = SwitchEntityDescription(key=unique_id)
         self._attr_entity_category = EntityCategory.CONFIG
         self._attr_translation_key = name
+        self._setting = setting
 
     async def async_turn_on(self, **_kwargs: Any) -> None:
-        """Turn on the light."""
-        await self._device.turn_on()
+        await self._setting.enable(self._device)
 
     async def async_turn_off(self, **_kwargs: Any) -> None:
-        """Turn off the light."""
-        await self._device.turn_off()
+        await self._setting.disable(self._device)
+
+    @callback
+    def handle_state_update(self, is_on: bool) -> None:
+        self._attr_is_on = is_on
+        self.async_write_ha_state()
 
 
 class SN2SwitchPlug(SystemNexa2Entity, SwitchEntity):

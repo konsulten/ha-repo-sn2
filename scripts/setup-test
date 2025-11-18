@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Setup test environment for SystemNexa2 integration
+
+set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$SCRIPT_DIR/setup"
+
+python3 -m pip install --requirement test-requirements.txt
