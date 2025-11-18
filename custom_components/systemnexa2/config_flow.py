@@ -3,6 +3,7 @@
 import logging
 from typing import Any
 
+from attr import dataclass
 from homeassistant.config_entries import (
     CONN_CLASS_LOCAL_PUSH,
     ConfigFlow,
@@ -13,13 +14,24 @@ from homeassistant.const import (
     CONF_HOST,
     CONF_MODEL,
     CONF_NAME,
-    CONF_TYPE,
 )
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
-from . import DOMAIN, LIGHT_MODELS, PLUG_MODELS, SWITCH_MODELS
+import sn2
+import sn2.device
+
+from . import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class _DiscoveryInfo:
+    name: str
+    host: str
+    model: str | None
+    device_id: str | None
+    device_version: str | None
 
 
 class SN2ConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -47,125 +59,60 @@ class SN2ConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_zeroconf(
         self, discovery_info: ZeroconfServiceInfo
     ) -> ConfigFlowResult:
-        """Handle zeroconf discovery and automatically set up the device."""
+        """Handle zeroconf discovery."""
         # Extract device information
-        host = discovery_info.host
-        name = discovery_info.name.split(".")[0]
-        properties = discovery_info.properties
-
-        # Check if this is a supported device
-        if "model" not in properties:
-            _LOGGER.warning(
-                "Device %s at %s missing model information in mDNS record", name, host
-            )
-            return self.async_abort(reason="not_supported")
-
-        model = properties["model"]
-
-        # Verify model is in our supported lists
-        if (
-            model not in SWITCH_MODELS
-            and model not in LIGHT_MODELS
-            and model not in PLUG_MODELS
+        self._discovered_device = _DiscoveryInfo(
+            name=discovery_info.name.split(".")[0],
+            host=discovery_info.host,
+            device_id=discovery_info.properties.get("id"),
+            model=discovery_info.properties.get("model"),
+            device_version=discovery_info.properties.get("version"),
+        )
+        # Check if device model and version are supported
+        if not sn2.device.Device.is_device_supported(
+            model=self._discovered_device.model,
+            device_version=self._discovered_device.device_version,
         ):
-            _LOGGER.warning(
-                "Device %s at %s has unsupported model: %s", name, host, model
-            )
             return self.async_abort(reason="unsupported_model")
-
-        # Check firmware version requirement
-        if "version" not in properties:
-            _LOGGER.warning(
-                "Device %s at %s doesn't advertise firmware version - skipping",
-                name,
-                host,
-            )
-            return self.async_abort(reason="firmware_version_missing")
-
-        # Version check - require at least 0.9.5
-        device_version = properties["version"]
-        if not self._is_version_compatible(device_version, min_version="0.9.5"):
-            _LOGGER.warning(
-                (
-                    "Device %s at %s has incompatible firmware version %s "
-                    "(min required: 0.9.5)"
-                ),
-                name,
-                host,
-                device_version,
-            )
-            return self.async_abort(reason="firmware_version_incompatible")
-
-        device_id = properties.get("id", name)
-
-        # Determine device type based on model
-        if model in SWITCH_MODELS:
-            device_type = "switch"
-        if model in PLUG_MODELS:
-            device_type = "switch"
-        elif model in LIGHT_MODELS:
-            device_type = "light"
-        else:
-            return self.async_abort(reason="not_supported")
-
         # Set unique ID and check if already configured
-        await self.async_set_unique_id(device_id)
-        self._abort_if_unique_id_configured(updates={CONF_HOST: host})
+        await self.async_set_unique_id(self._discovered_device.device_id)
+        # Update host if device is already configured
+        self._abort_if_unique_id_configured(
+            updates={CONF_HOST: discovery_info.host}
+        )
 
         # Log the discovered device
         _LOGGER.info(
-            "Automatically configuring discovered %s: %s (%s) at %s",
-            device_type,
-            name,
-            model,
-            host,
+            "Automatically configuring discovered %s: %s at %s",
+            # device_type,
+            self._discovered_device.name,
+            self._discovered_device.model,
+            self._discovered_device.host,
         )
+        self.context["title_placeholders"] = {
+            "name": self._discovered_device.name,
+            "model": self._discovered_device.model or "",
+        }
+        return await self.async_step_discovery_confirm()
 
-        # Automatically create the config entry without any user interaction
-        return self.async_create_entry(
-            title=f"{name} ({model})",
-            data={
-                CONF_HOST: host,
-                CONF_NAME: name,
-                CONF_MODEL: model,
-                CONF_DEVICE_ID: device_id,
-                CONF_TYPE: device_type,
-            },
-        )
-
-    def _is_version_compatible(self, version: str, min_version: str) -> bool:
-        """Check if a version string meets minimum version requirements."""
-        try:
-            # Clean up version strings - remove any pre-release indicators
-            # Example: "0.9.5-beta.2" becomes "0.9.5"
-            clean_version = version.split("-")[0].split("+")[0]
-            clean_min_version = min_version.split("-")[0].split("+")[0]
-
-            # Split version strings into components
-            version_parts = [int(part) for part in clean_version.split(".")]
-            min_version_parts = [int(part) for part in clean_min_version.split(".")]
-
-            # Pad shorter lists with zeros
-            while len(version_parts) < len(min_version_parts):
-                version_parts.append(0)
-            while len(min_version_parts) < len(version_parts):
-                min_version_parts.append(0)
-
-            # Compare version components
-            for v, m in zip(version_parts, min_version_parts, strict=False):
-                if v > m:
-                    return True
-                if v < m:
-                    return False
-
-            # All components are equal, so versions are equal
-
-        except (ValueError, IndexError):
-            # If parsing fails, log the error and reject the version
-            _LOGGER.exception(
-                "Error parsing version strings '%s' and '%s'",
-                version,
-                min_version,
+    async def async_step_discovery_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm discovery."""
+        if user_input is not None:
+            device_name = self._discovered_device.name
+            device_model = self._discovered_device.model
+            return self.async_create_entry(
+                title=f"{device_name} ({device_model})",
+                data={
+                    CONF_HOST: self._discovered_device.host,
+                    CONF_NAME: self._discovered_device.name,
+                    CONF_MODEL: self._discovered_device.model,
+                    CONF_DEVICE_ID: self._discovered_device.device_id,
+                },
             )
-            return False
-        return True
+        self._set_confirm_only()
+        return self.async_show_form(
+            step_id="discovery_confirm",
+            description_placeholders={"name": self._discovered_device.name},
+        )

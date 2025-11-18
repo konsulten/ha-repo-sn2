@@ -7,6 +7,21 @@
       "unsupported_model": "Unsupported device model",
       "firmware_version_missing": "Device missing firmware version information",
       "firmware_version_incompatible": "Device firmware version too old. Please update to at least version 0.9.5."
+    },
+    "flow_title":"{name}-({model})",
+    "step": {
+      "discovery_confirm": {
+          "description": "Do you want to add the device `{name}` to Home Assistant?",
+          "title": "Discovered Nexa System 2 device"
+      }
+    }
+  },
+  "entity": {
+    "switch": {
+      "433Mhz": {
+        "name": "433Mhz"
+      }
     }
   }
+
 }
